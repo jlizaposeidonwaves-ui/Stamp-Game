@@ -1,1 +1,1 @@
-# GAMESIMULATOR
+# stamp-game
