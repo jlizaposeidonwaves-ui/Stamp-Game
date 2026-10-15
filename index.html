@@ -1,0 +1,677 @@
+<script>
+const state = {
+  started: false,
+  currentDocIndex: 0,
+  processed: 0,
+  auditFlags: 0,
+  timeMinutes: 16 * 60,
+  stampSelection: null,
+  soundEnabled: false,
+  consequences: [],
+  mouseX: 0,
+  mouseY: 0,
+  isDragging: false,
+  dragTarget: null,
+  dragOffsetX: 0,
+  dragOffsetY: 0
+};
+
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function playSound(type) {
+  if (!state.soundEnabled || !audioCtx) return;
+  
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  
+  switch(type) {
+    case 'key':
+      osc.frequency.value = 1200 + Math.random() * 400;
+      gain.gain.setValueAtTime(0.03, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.03);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.03);
+      break;
+    case 'stamp':
+      osc.frequency.value = 120;
+      gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.15);
+      const noise = audioCtx.createBufferSource();
+      const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = (Math.random() * 2 - 1) * 0.1 * (1 - i / data.length);
+      }
+      noise.buffer = buffer;
+      const noiseGain = audioCtx.createGain();
+      noise.connect(noiseGain);
+      noiseGain.connect(audioCtx.destination);
+      noiseGain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+      noise.start();
+      break;
+    case 'error':
+      osc.frequency.value = 180;
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      osc.frequency.setValueAtTime(120, audioCtx.currentTime + 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.25);
+      break;
+    case 'tick':
+      osc.frequency.value = 2000;
+      gain.gain.setValueAtTime(0.015, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.02);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.02);
+      break;
+    case 'pickup':
+      osc.frequency.value = 300;
+      gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.08);
+      break;
+    case 'drop':
+      osc.frequency.value = 200;
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.1);
+      break;
+  }
+}
+
+const documentDB = [
+  {
+    id: 'doc1',
+    type: 'ARREST WARRANT',
+    caseNumber: 'AF-2026-04471',
+    title: 'Warrant — Kowalski, V.',
+    subject: 'KOWALSKI, VINCENT "VINNY"',
+    requestingOfficer: 'DET. R. MARTINEZ',
+    badge: '4471',
+    charge: 'ARMED ROBBERY, 2ND DEGREE',
+    judge: 'JUDGE H. PRESCOTT',
+    judgeValid: true,
+    signatureClear: true,
+    probableCause: 'Confidential informant #C-339 provided verified location of subject at 447 Maple St, Apt 3B. Subject wanted in connection with armed robbery of Ashford Savings & Loan, 10/12/2026. CI reliability established in prior cases AF-2025-08912, AF-2025-09144.',
+    timeCost: 15,
+    consequence: {
+      approved: { flag: false, text: 'Warrant executed 22:14. Subject in custody without incident.' },
+      denied: { flag: true, text: 'Subject fled jurisdiction. Detective Martinez files complaint against Records Division.' },
+      flagged: { flag: false, text: 'Sent for review. Delayed 4 hours. Subject apprehended on unrelated charge.' }
+    },
+    lookup: {
+      'KOWALSKI': 'RECORD FOUND: KOWALSKI, VINCENT. DOB 03/12/1985. PRIOR: Burglary (2019), Assault (2021). ACTIVE WARRANT: Yes. GANG AFFILIATION: Suspected. LAST KNOWN: 447 Maple St.',
+      'AF-2026-04471': 'CASE ACTIVE. Assigned: Det. R. Martinez. Related: AF-2025-08912, AF-2025-09144.',
+      'PRESCOTT': 'JUDGE H. PRESCOTT: Active bench, Criminal Division. Signature verified on file.'
+    }
+  },
+  {
+    id: 'doc2',
+    type: 'SURVEILLANCE REQUEST',
+    caseNumber: 'AF-2026-04489',
+    title: 'Surveillance — 447 Maple St',
+    subject: '447 MAPLE ST, APT 3B (PREMISES)',
+    requestingOfficer: 'DET. F. OKONKWO',
+    badge: '2219',
+    charge: 'NARCOTICS DISTRIBUTION',
+    judge: 'JUDGE M. CALDWELL',
+    judgeValid: true,
+    signatureClear: false,
+    probableCause: 'Subject premises identified as distribution point for Schedule II narcotics. CI #C-339 corroborates. 48-hour window requested for electronic surveillance.',
+    timeCost: 20,
+    consequence: {
+      approved: { flag: true, text: 'Surveillance conducted. No narcotics found. Defense alleges improper authorization — signature mismatch noted in discovery.' },
+      denied: { flag: false, text: 'Request returned for proper signature. Re-filed 48 hours later with corrected documentation.' },
+      flagged: { flag: false, text: 'Sent to Judge Caldwell for verification. Signature confirmed, approved next day.' }
+    },
+    lookup: {
+      'OKONKWO': 'DET. F. OKONKWO: Narcotics Division. Badge 2219. Clearance: LEVEL 3.',
+      'CALDWELL': 'JUDGE M. CALDWELL: Active bench. WARNING: Signature on submitted document DOES NOT MATCH signature on file.',
+      'AF-2026-04489': 'CASE ACTIVE. Narcotics investigation, 6 weeks duration.',
+      '447 MAPLE': 'ADDRESS: 447 Maple St, Apt 3B. Registered: Kowalski, V. Also on lease: M. Chen, J. Doe.'
+    }
+  },
+  {
+    id: 'doc3',
+    type: 'FILE REQUEST',
+    caseNumber: 'IA-2026-00112',
+    title: 'IA File Request — Morales',
+    subject: 'PERSONNEL FILE: DET. S. MORALES',
+    requestingOfficer: 'LT. K. BRANDT, IA',
+    badge: '0007',
+    charge: 'INTERNAL INVESTIGATION',
+    judge: 'N/A — INTERNAL',
+    judgeValid: true,
+    signatureClear: true,
+    probableCause: 'Request for complete personnel and disciplinary records of Det. S. Morales, Badge 8841, in connection with ongoing investigation IA-2026-00112. Clearance verified.',
+    timeCost: 10,
+    consequence: {
+      approved: { flag: false, text: 'File transmitted to IA. Detective Morales suspended pending review.' },
+      denied: { flag: true, text: 'IA subpoenas your own records. Obstruction inquiry opened against Records Division.' },
+      flagged: { flag: true, text: 'Flagged for review. IA notes "uncooperative" in your personnel file.' }
+    },
+    lookup: {
+      'MORALES': 'DET. S. MORALES: Badge 8841. 14 years service. Commendations: 7. Complaints: 3 (sustained: 1). NOTE: Spouse filed domestic incident report 10/08/2026. Case pending.',
+      'BRANDT': 'LT. K. BRANDT: Internal Affairs. Badge 0007. Clearance: LEVEL 5.',
+      'IA-2026-00112': 'INTERNAL AFFAIRS CASE: Active. Nature: CLASSIFIED. Requesting officer clearance verified.'
+    }
+  },
+  {
+    id: 'doc4',
+    type: 'SURVEILLANCE REQUEST',
+    caseNumber: 'AF-2026-04502',
+    title: 'Surveillance — Ashford Gazette',
+    subject: 'ASHFORD GAZETTE NEWSROOM, 3RD FLOOR',
+    requestingOfficer: 'DET. R. MARTINEZ',
+    badge: '4471',
+    charge: 'OBSTRUCTION OF JUSTICE',
+    judge: 'JUDGE H. PRESCOTT',
+    judgeValid: true,
+    signatureClear: true,
+    probableCause: 'Subject location believed to harbor source leaking active investigation details to press. Electronic surveillance of newsroom communication systems requested. All paperwork in order.',
+    timeCost: 25,
+    consequence: {
+      approved: { flag: true, text: 'Newsroom surveilled. Source identified. Newspaper publishes exposé on police overreach. Subpoena issued for YOUR records.' },
+      denied: { flag: false, text: 'Request denied. Detective Martinez notes "obstruction" in memo to Captain.' },
+      flagged: { flag: false, text: 'Sent to DA for review. Request withdrawn quietly. No further action.' }
+    },
+    lookup: {
+      'GAZETTE': 'ASHFORD GAZETTE: Local newspaper. Circulation 45,000. Recent articles on police conduct. Publisher: E. VANCE (no relation to Judge).',
+      'AF-2026-04502': 'CASE ACTIVE. Investigation into leak of AF-2026-04471 details.',
+      'PRESCOTT': 'JUDGE H. PRESCOTT: Active bench, Criminal Division. Signature verified.'
+    }
+  },
+  {
+    id: 'doc5',
+    type: 'EVIDENCE TRANSFER',
+    caseNumber: 'AF-2026-04471',
+    title: 'Evidence — Firearm',
+    subject: 'FIREARM: .38 REVOLVER, SN 8841920',
+    requestingOfficer: 'DET. F. OKONKWO',
+    badge: '2219',
+    charge: 'CHAIN OF CUSTODY',
+    judge: 'N/A — EVIDENCE',
+    judgeValid: true,
+    signatureClear: true,
+    probableCause: 'Transfer of recovered weapon from evidence locker to ballistics for testing. Chain of custody documentation attached. Seal intact. Lab capacity confirmed.',
+    timeCost: 15,
+    consequence: {
+      approved: { flag: false, text: 'Evidence transferred. Ballistics match confirmed with robbery scene.' },
+      denied: { flag: true, text: 'Evidence remains in locker. Defense notes "procedural delay" in discovery motion.' },
+      flagged: { flag: false, text: 'Held for supervisor review. Transferred next morning without incident.' }
+    },
+    lookup: {
+      '8841920': 'FIREARM RECORD: .38 revolver, serial 8841920. Reported stolen 09/28/2026, Ashford Heights.',
+      'AF-2026-04471': 'CASE ACTIVE. Evidence inventory: 1 firearm, 3 bags currency, 1 note.'
+    }
+  },
+  {
+    id: 'doc6',
+    type: 'EMERGENCY WARRANT',
+    caseNumber: 'AF-2026-04511',
+    title: 'Emergency Warrant — 221 Cedar Ln',
+    subject: 'PREMISES: 221 CEDAR LANE',
+    requestingOfficer: 'DET. S. MORALES',
+    badge: '8841',
+    charge: 'KIDNAPPING, 1ST DEGREE',
+    judge: 'JUDGE E. VANCE',
+    judgeValid: false,
+    signatureClear: true,
+    probableCause: 'Child, age 7, reported missing 14:30 today. Vehicle seen at 221 Cedar Lane. Owner has prior conviction for unlawful restraint. Urgent entry requested.',
+    timeCost: 20,
+    consequence: {
+      approved: { flag: true, text: 'Entry made 23:45. Child not found. Homeowner files unlawful entry suit. Judge Vance was NOT on call — warrant invalid.' },
+      denied: { flag: true, text: 'Warrant denied. Child found elsewhere 20:00, unharmed. Department criticized for delay in press conference.' },
+      flagged: { flag: false, text: 'Routed to on-call Judge Huang. Approved 30 minutes later. Child recovered safely.' }
+    },
+    lookup: {
+      'VANCE': 'JUDGE E. VANCE: NOT on emergency call rotation this week. On-call judge: T. HUANG.',
+      'CEDAR': '221 CEDAR LANE: Registered: T. BRIGGS. PRIOR: Unlawful restraint (2018), served 18 months. Parole status: Active.',
+      'AF-2026-04511': 'CASE ACTIVE — PRIORITY. AMBER ALERT issued 15:15.'
+    }
+  }
+];
+
+const cmdInput = document.getElementById('cmd-input');
+const termOutput = document.getElementById('terminal-content');
+
+cmdInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const cmd = cmdInput.value.trim();
+    if (!cmd) return;
+    
+    playSound('key');
+    addTermLine('APD> ' + cmd, 'cmd');
+    cmdInput.value = '';
+    
+    processCommand(cmd);
+  }
+});
+
+function processCommand(cmd) {
+  const parts = cmd.split(' ');
+  const base = parts[0].toUpperCase();
+  const args = parts.slice(1).join(' ');
+  
+  let result = null;
+  let isError = false;
+  
+  switch(base) {
+    case 'HELP':
+      result = 'AVAILABLE COMMANDS:\n  LOOKUP [NAME/CASE/TERM]  Search records\n  VERIFY [CASE #]          Check case status\n  JUDGES                   List active bench\n  TIME                     Current time\n  CLEAR                    Clear terminal\n  HELP                     This message';
+      break;
+    case 'JUDGES':
+      result = 'ACTIVE BENCH — CRIMINAL DIVISION:\n  PRESCOTT, H.    On duty\n  CALDWELL, M.    On duty\n  VANCE, E.       NOT on call (emergency: HUANG, T.)\n  HUANG, T.       Emergency rotation';
+      break;
+    case 'TIME':
+      result = 'CURRENT TIME: ' + formatTime(state.timeMinutes);
+      break;
+    case 'CLEAR':
+      termOutput.innerHTML = '';
+      return;
+    case 'LOOKUP':
+      if (!args) {
+        result = 'USAGE: LOOKUP [NAME/CASE/TERM]';
+        isError = true;
+      } else {
+        result = lookup(args);
+        if (result.includes('NO RECORDS') || result.includes('NOT FOUND')) isError = true;
+      }
+      break;
+    case 'VERIFY':
+      if (!args) {
+        result = 'USAGE: VERIFY [CASE #]';
+        isError = true;
+      } else {
+        result = verify(args);
+        if (result.includes('NOT FOUND')) isError = true;
+      }
+      break;
+    default:
+      result = 'UNKNOWN COMMAND: ' + base + '. Type HELP for commands.';
+      isError = true;
+      playSound('error');
+  }
+  
+  if (result) {
+    addTermLine(result, isError ? 'error' : 'result');
+  }
+}
+
+function lookup(term) {
+  const doc = documentDB[state.currentDocIndex];
+  if (!doc) return 'NO DOCUMENT IN REVIEW.';
+  
+  const upper = term.toUpperCase();
+  
+  for (const [key, value] of Object.entries(doc.lookup)) {
+    if (upper.includes(key) || key.includes(upper)) {
+      return value;
+    }
+  }
+  
+  if (upper.includes('MARTINEZ')) return 'DET. R. MARTINEZ: Robbery/Homicide. Badge 4471. 11 years service. Clearance: LEVEL 4.';
+  if (upper.includes('OKONKWO')) return 'DET. F. OKONKWO: Narcotics Division. Badge 2219. Clearance: LEVEL 3.';
+  if (upper.includes('MORALES')) return 'DET. S. MORALES: Badge 8841. 14 years service. NOTE: See IA-2026-00112.';
+  if (upper.includes('BRANDT')) return 'LT. K. BRANDT: Internal Affairs. Badge 0007. Clearance: LEVEL 5.';
+  if (upper.includes('HUANG')) return 'JUDGE T. HUANG: Emergency rotation this week.';
+  
+  return 'NO RECORDS FOUND FOR: ' + term;
+}
+
+function verify(caseNum) {
+  const upper = caseNum.toUpperCase();
+  const doc = documentDB.find(d => d.caseNumber === upper);
+  if (doc) {
+    return 'CASE ' + doc.caseNumber + ': ' + doc.type + ' — ' + doc.title;
+  }
+  return 'CASE ' + caseNum + ': NOT FOUND OR CLOSED';
+}
+
+function addTermLine(text, type) {
+  const line = document.createElement('div');
+  line.style.whiteSpace = 'pre-wrap';
+  line.style.wordBreak = 'break-word';
+  line.style.margin = '3px 0';
+  
+  if (type === 'cmd') {
+    line.style.color = '#fff';
+  } else if (type === 'error') {
+    line.style.color = '#ff4444';
+    line.style.textShadow = '0 0 4px rgba(255,68,68,0.5)';
+  } else if (type === 'warning') {
+    line.style.color = '#ffb000';
+    line.style.textShadow = '0 0 4px rgba(255,176,0,0.5)';
+  } else {
+    line.style.color = '#4aff4a';
+  }
+  
+  line.textContent = text;
+  termOutput.appendChild(line);
+  termOutput.scrollTop = termOutput.scrollHeight;
+}
+
+function renderDocument(doc) {
+  const docEl = document.getElementById('current-document');
+  
+  let html = '<div class="doc-header">CITY OF ASHFORD<br>MUNICIPAL POLICE DEPARTMENT<br>' + doc.type + '</div>';
+  html += '<div class="doc-field"><span class="label">CASE #:</span><span>' + doc.caseNumber + '</span></div>';
+  html += '<div class="doc-field"><span class="label">REQUESTING:</span><span>' + doc.requestingOfficer + '</span></div>';
+  html += '<div class="doc-field"><span class="label">BADGE:</span><span>' + doc.badge + '</span></div>';
+  html += '<div class="doc-field"><span class="label">SUBJECT:</span><span>' + doc.subject + '</span></div>';
+  html += '<div class="doc-field"><span class="label">CHARGE:</span><span>' + doc.charge + '</span></div>';
+  
+  if (doc.judge !== 'N/A — INTERNAL' && doc.judge !== 'N/A — EVIDENCE') {
+    html += '<div class="doc-field"><span class="label">JUDGE:</span><span>' + doc.judge + '</span></div>';
+  }
+  
+  html += '<div class="doc-body">' + doc.probableCause + '</div>';
+  
+  html += '<div class="doc-signature">';
+  html += '<div class="sig-line">' + doc.requestingOfficer + '</div>';
+  if (doc.judge.includes('JUDGE')) {
+    const sigClass = doc.signatureClear ? '' : 'sig-illegible';
+    const sigNote = doc.signatureClear ? '' : ' (ILLEGIBLE)';
+    html += '<div class="sig-line ' + sigClass + '">' + doc.judge + sigNote + '</div>';
+  } else {
+    html += '<div class="sig-line">' + doc.judge + '</div>';
+  }
+  html += '</div>';
+  
+  html += '<div class="stamp-mark" id="stamp-mark"></div>';
+  
+  docEl.innerHTML = html;
+  
+  const rot = (Math.random() - 0.5) * 3;
+  document.getElementById('document-3d').style.transform = 'rotateZ(' + rot + 'deg)';
+  
+  document.getElementById('current-doc').textContent = 'REVIEWING: ' + doc.title;
+}
+
+document.querySelectorAll('.stamp-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.stamp-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    state.stampSelection = btn.dataset.stamp;
+    playSound('key');
+  });
+});
+
+document.getElementById('current-document').addEventListener('click', (e) => {
+  if (!state.stampSelection) return;
+  
+  const doc = documentDB[state.currentDocIndex];
+  if (!doc || doc.processed) return;
+  
+  applyStamp(state.stampSelection, e.clientX, e.clientY);
+});
+
+function applyStamp(type, x, y) {
+  const doc = documentDB[state.currentDocIndex];
+  const stampEl = document.getElementById('stamp-mark');
+  const docEl = document.getElementById('current-document');
+  
+  const rect = docEl.getBoundingClientRect();
+  const relX = ((x - rect.left) / rect.width) * 100;
+  const relY = ((y - rect.top) / rect.height) * 100;
+  
+  stampEl.className = 'stamp-mark ' + type.toLowerCase();
+  stampEl.style.left = Math.max(10, Math.min(70, relX - 15)) + '%';
+  stampEl.style.top = Math.max(10, Math.min(80, relY - 10)) + '%';
+  stampEl.textContent = type;
+  stampEl.classList.add('stamp-anim');
+  
+  const flash = document.createElement('div');
+  flash.className = 'stamp-flash';
+  flash.style.setProperty('--fx', (x / window.innerWidth * 100) + '%');
+  flash.style.setProperty('--fy', (y / window.innerHeight * 100) + '%');
+  document.body.appendChild(flash);
+  setTimeout(() => flash.remove(), 150);
+  
+  playSound('stamp');
+  
+  doc.processed = true;
+  state.processed++;
+  
+  const cons = doc.consequence[type.toLowerCase()];
+  if (cons.flag) state.auditFlags++;
+  
+  state.consequences.push({
+    doc: doc.title,
+    decision: type,
+    text: cons.text,
+    flagged: cons.flag
+  });
+  
+  state.timeMinutes += doc.timeCost;
+  updateClock();
+  
+  updateTray();
+  updateStatus();
+  
+  document.querySelectorAll('.stamp-btn').forEach(b => b.classList.remove('selected'));
+  state.stampSelection = null;
+  
+  setTimeout(() => {
+    if (state.processed >= documentDB.length) {
+      endShift();
+    } else {
+      let next = state.currentDocIndex + 1;
+      while (next < documentDB.length && documentDB[next].processed) next++;
+      if (next < documentDB.length) {
+        state.currentDocIndex = next;
+        renderDocument(documentDB[next]);
+      }
+    }
+  }, 1000);
+}
+
+function makeDraggable(element, handle) {
+  const dragHandle = handle || element;
+  
+  dragHandle.addEventListener('mousedown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.closest('.tray-item')) return;
+    
+    state.isDragging = true;
+    state.dragTarget = element;
+    element.classList.add('dragging');
+    
+    const rect = element.getBoundingClientRect();
+    state.dragOffsetX = e.clientX - rect.left;
+    state.dragOffsetY = e.clientY - rect.top;
+    
+    playSound('pickup');
+    e.preventDefault();
+  });
+  
+  document.addEventListener('mousemove', (e) => {
+    if (!state.isDragging || state.dragTarget !== element) return;
+    
+    let newX = e.clientX - state.dragOffsetX;
+    let newY = e.clientY - state.dragOffsetY;
+    
+    const rect = element.getBoundingClientRect();
+    newX = Math.max(0, Math.min(window.innerWidth - rect.width, newX));
+    newY = Math.max(0, Math.min(window.innerHeight - rect.height, newY));
+    
+    element.style.left = newX + 'px';
+    element.style.top = newY + 'px';
+    element.style.right = 'auto';
+  });
+  
+  document.addEventListener('mouseup', () => {
+    if (state.dragTarget === element) {
+      state.isDragging = false;
+      state.dragTarget = null;
+      element.classList.remove('dragging');
+      playSound('drop');
+    }
+  });
+}
+
+const trayElement = document.getElementById('tray');
+makeDraggable(trayElement, trayElement.querySelector('.tray-label'));
+
+function updateClock() {
+  document.getElementById('clock').textContent = formatTime(state.timeMinutes);
+}
+
+function formatTime(mins) {
+  const h = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  return h.toString().padStart(2,'0') + ':' + m.toString().padStart(2,'0');
+}
+
+function updateTray() {
+  const trayItems = document.getElementById('tray-items');
+  trayItems.innerHTML = '';
+  
+  documentDB.forEach((doc, i) => {
+    const item = document.createElement('div');
+    item.className = 'tray-item';
+    if (i === state.currentDocIndex) item.classList.add('current');
+    if (doc.processed) item.classList.add('processed');
+    
+    let status = '';
+    if (doc.processed) {
+      const cons = state.consequences.find(c => c.doc === doc.title);
+      status = cons ? cons.decision.toLowerCase() : 'processed';
+    }
+    
+    item.innerHTML = '<div class="folder"><span class="folder-label">' + doc.title + '</span>' + 
+      (status ? '<span class="folder-status">' + status + '</span>' : '') + '</div>';
+    
+    item.addEventListener('click', () => {
+      if (!doc.processed) {
+        state.currentDocIndex = i;
+        renderDocument(doc);
+        updateTray();
+      }
+    });
+    trayItems.appendChild(item);
+  });
+}
+
+function updateStatus() {
+  const remaining = documentDB.filter(d => !d.processed).length;
+  document.getElementById('tray-count').textContent = 'TRAY: ' + remaining;
+  document.getElementById('audit-flags').textContent = 'AUDIT FLAGS: ' + state.auditFlags;
+}
+
+function endShift() {
+  document.getElementById('document-container').style.display = 'none';
+  document.getElementById('terminal-overlay').style.display = 'none';
+  document.getElementById('stamp-pad').style.display = 'none';
+  document.getElementById('status-bar').style.display = 'none';
+  document.getElementById('tray').style.display = 'none';
+  
+  const ending = document.getElementById('ending');
+  const content = document.getElementById('ending-content');
+  
+  let html = '<p>Documents processed: ' + state.processed + '</p>';
+  html += '<p>Audit flags: ' + state.auditFlags + '</p>';
+  
+  if (state.auditFlags >= 3) {
+    html += '<p style="color: #ff4444; margin-top: 20px; font-size: 18px;">STATUS: REFERRED TO INTERNAL AFFAIRS</p>';
+    html += '<p style="margin-top: 8px;">Report to Room 214, 09:00 tomorrow.<br>Bring your stamp.</p>';
+  } else if (state.auditFlags === 2) {
+    html += '<p style="color: #ffb000; margin-top: 20px; font-size: 18px;">STATUS: SUPERVISORY REVIEW</p>';
+    html += '<p style="margin-top: 8px;">Captain wishes to discuss your "judgment calls."</p>';
+  } else if (state.auditFlags === 1) {
+    html += '<p style="color: #ffb000; margin-top: 20px; font-size: 18px;">STATUS: FLAGGED FOR FOLLOW-UP</p>';
+    html += '<p style="margin-top: 8px;">One decision requires justification. Memo due Friday.</p>';
+  } else {
+    html += '<p style="color: #4aff4a; margin-top: 20px; font-size: 18px;">STATUS: CLEAN AUDIT</p>';
+    html += '<p style="margin-top: 8px;">No irregularities found. See you tomorrow.</p>';
+  }
+  
+  const flagged = state.consequences.filter(c => c.flagged);
+  if (flagged.length > 0) {
+    html += '<div class="newspaper">';
+    html += '<h3>THE ASHFORD GAZETTE</h3>';
+    html += '<div class="dateline">Late Edition — ' + formatTime(state.timeMinutes) + '</div>';
+    html += '<p>' + flagged[0].text + '</p>';
+    html += '</div>';
+  }
+  
+  html += '<p style="margin-top: 20px; font-size: 11px; color: #444; letter-spacing: 1px;">SHIFT LOG:</p>';
+  state.consequences.forEach(c => {
+    const color = c.flagged ? '#ff6666' : '#555';
+    html += '<p style="font-size: 11px; margin: 6px 0; color: ' + color + ';">[' + c.decision + '] ' + c.doc + '</p>';
+  });
+  
+  content.innerHTML = html;
+  ending.style.display = 'flex';
+}
+
+document.addEventListener('mousemove', (e) => {
+  state.mouseX = (e.clientX / window.innerWidth - 0.5) * 2;
+  state.mouseY = (e.clientY / window.innerHeight - 0.5) * 2;
+  
+  if (!state.started || state.isDragging) return;
+  
+  const doc = document.getElementById('document-3d');
+  if (doc) {
+    doc.style.transform = 'rotateZ(0deg) rotateY(' + (state.mouseX * 1.5) + 'deg) rotateX(' + (-state.mouseY * 1.5) + 'deg)';
+  }
+});
+
+document.getElementById('intro').addEventListener('click', () => {
+  document.getElementById('intro').style.display = 'none';
+  document.getElementById('document-container').style.display = 'block';
+  document.getElementById('terminal-overlay').style.display = 'block';
+  document.getElementById('stamp-pad').style.display = 'flex';
+  document.getElementById('status-bar').style.display = 'flex';
+  document.getElementById('tray').style.display = 'block';
+  
+  state.started = true;
+  
+  renderDocument(documentDB[0]);
+  updateTray();
+  updateStatus();
+  updateClock();
+  
+  addTermLine('APD RECORDS TERMINAL v3.7', 'result');
+  addTermLine('CONNECTED TO CENTRAL DATABASE', 'result');
+  addTermLine('TYPE HELP FOR COMMANDS', 'warning');
+  addTermLine('', 'result');
+  addTermLine('NIGHT SHIFT — 6 DOCUMENTS IN TRAY', 'warning');
+  addTermLine('DRAG TRAY TO REPOSITION', 'warning');
+  
+  setInterval(() => {
+    if (state.started && state.processed < documentDB.length) {
+      state.timeMinutes += 1;
+      updateClock();
+      playSound('tick');
+    }
+  }, 8000);
+  
+  cmdInput.focus();
+});
+
+document.getElementById('sound-toggle').addEventListener('click', (e) => {
+  e.stopPropagation();
+  state.soundEnabled = !state.soundEnabled;
+  document.getElementById('sound-toggle').textContent = 'SOUND: ' + (state.soundEnabled ? 'ON' : 'OFF');
+  if (state.soundEnabled) initAudio();
+});
+
+document.addEventListener('click', () => {
+  if (state.started && !state.isDragging) cmdInput.focus();
+});
+</script>
+</body>
+</html>
